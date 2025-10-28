@@ -104,7 +104,9 @@ var (
 		prometheus.GaugeOpts{
 			Name: "alertmanager_inhibition_rules",
 			Help: "Number of configured inhibition rules.",
-		})
+		},
+	)
+
 	promslogConfig = promslog.Config{}
 )
 
@@ -163,6 +165,7 @@ func run() int {
 		clusterBindAddr = kingpin.Flag("cluster.listen-address", "Listen address for cluster. Set to empty string to disable HA mode.").
 				Default(defaultClusterAddr).String()
 		clusterAdvertiseAddr   = kingpin.Flag("cluster.advertise-address", "Explicit address to advertise in cluster.").String()
+		clusterPeerName        = kingpin.Flag("cluster.peer-name", "Explicit name of the peer, rather than generating a random one").Default("").String()
 		peers                  = kingpin.Flag("cluster.peer", "Initial peers (may be repeated).").Strings()
 		peerTimeout            = kingpin.Flag("cluster.peer-timeout", "Time to wait between peers to send notifications.").Default("15s").Duration()
 		gossipInterval         = kingpin.Flag("cluster.gossip-interval", "Interval between sending gossip messages. By lowering this value (more frequent) gossip messages are propagated across the cluster more quickly at the expense of increased bandwidth.").Default(cluster.DefaultGossipInterval.String()).Duration()
@@ -254,6 +257,7 @@ func run() int {
 			tlsTransportConfig,
 			*allowInsecureAdvertise,
 			*label,
+			*clusterPeerName,
 		)
 		if err != nil {
 			logger.Error("unable to initialize gossip mesh", "err", err)
@@ -408,6 +412,7 @@ func run() int {
 	)
 
 	dispMetrics := dispatch.NewDispatcherMetrics(false, prometheus.DefaultRegisterer)
+	inhibitMetrics := inhibit.NewInhibitorMetrics(prometheus.DefaultRegisterer)
 	pipelineBuilder := notify.NewPipelineBuilder(prometheus.DefaultRegisterer, ff)
 	configLogger := logger.With("component", "configuration")
 	configCoordinator := config.NewCoordinator(
@@ -462,7 +467,7 @@ func run() int {
 		inhibitor.Stop()
 		disp.Stop()
 
-		inhibitor = inhibit.NewInhibitor(alerts, conf.InhibitRules, marker, logger)
+		inhibitor = inhibit.NewInhibitor(alerts, conf.InhibitRules, marker, logger, inhibitMetrics)
 		silencer := silence.NewSilencer(silences, marker, logger)
 
 		// An interface value that holds a nil concrete value is non-nil.
