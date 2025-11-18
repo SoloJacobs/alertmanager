@@ -35,6 +35,7 @@ jobs:
     name: Test on ${{ matrix.os }} (${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         # Test on different OS/Architecture combinations
         os: [ubuntu-latest, macos-latest]
