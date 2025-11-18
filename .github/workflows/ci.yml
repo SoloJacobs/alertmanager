@@ -32,8 +32,14 @@ jobs:
           thread: ${{ matrix.thread }}
 
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Test on ${{ matrix.os }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Test on different OS/Architecture combinations
+        os: [ubuntu-latest]
+        arch: [x64, arm64] # x64 is the same as amd64
     # Whenever the Go version is updated here, .promu.yml
     # should also be updated.
     container:
@@ -54,5 +60,35 @@ jobs:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
       - uses: prometheus/promci@443c7fc2397e946bc9f5029e313a9c3441b9b86d # v0.4.7
       - uses: ./.github/promci/actions/setup_environment
+      - run: make
+      - run: git diff --exit-code
+
+  test-mac:
+    name: Test on ${{ matrix.os }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Test on different OS/Architecture combinations
+        os: [macos-latest]
+        arch: [x64, arm64] # x64 is the same as amd64
+    # Whenever the Go version is updated here, .promu.yml
+    # should also be updated.
+    services:
+      maildev-noauth:
+        image: maildev/maildev:2.2.1
+      maildev-auth:
+        image: maildev/maildev:2.2.1
+        env:
+          MAILDEV_INCOMING_USER: user
+          MAILDEV_INCOMING_PASS: pass
+    env:
+      EMAIL_NO_AUTH_CONFIG: testdata/noauth.yml
+      EMAIL_AUTH_CONFIG: testdata/auth.yml
+    steps:
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - uses: actions/checkout@v5
       - run: make
       - run: git diff --exit-code
