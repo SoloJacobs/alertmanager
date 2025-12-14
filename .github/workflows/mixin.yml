@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - "doc/alertmanager-mixin/**"
+  workflow_dispatch:
 
 jobs:
   mixin:
