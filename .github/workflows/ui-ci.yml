@@ -6,6 +6,7 @@ on:
       - '**'
     paths:
       - 'ui/**'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.number || github.sha }}
