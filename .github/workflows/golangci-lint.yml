@@ -11,6 +11,7 @@ on:
       - ".github/workflows/golangci-lint.yml"
       - ".golangci.yml"
   pull_request:
+  workflow_dispatch:
 
 permissions:  # added using https://github.com/step-security/secure-repo
   contents: read
