@@ -7,6 +7,7 @@ on:
     paths:
       - '.nvmrc'
       - 'ui/**'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.number || github.sha }}
