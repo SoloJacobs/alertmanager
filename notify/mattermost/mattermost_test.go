@@ -29,7 +29,8 @@ import (
 	"github.com/prometheus/common/promslog"
 	"github.com/stretchr/testify/require"
 
-	"github.com/prometheus/alertmanager/config"
+	amcommoncfg "github.com/prometheus/alertmanager/config/common"
+	config "github.com/prometheus/alertmanager/config/mattermost"
 	"github.com/prometheus/alertmanager/notify"
 	"github.com/prometheus/alertmanager/notify/test"
 	"github.com/prometheus/alertmanager/types"
@@ -40,7 +41,7 @@ var testWebhookURL, _ = url.Parse("https://mattermost.example.com/hooks/xxxxxxxx
 func TestMattermostRetry(t *testing.T) {
 	notifier, err := New(
 		&config.MattermostConfig{
-			WebhookURL: &config.SecretURL{URL: testWebhookURL},
+			WebhookURL: &amcommoncfg.SecretURL{URL: testWebhookURL},
 			HTTPConfig: &commoncfg.HTTPClientConfig{},
 		},
 		test.CreateTmpl(t),
@@ -88,7 +89,7 @@ func TestMattermostTemplating(t *testing.T) {
 		},
 	} {
 		t.Run(tc.title, func(t *testing.T) {
-			tc.cfg.WebhookURL = &config.SecretURL{URL: u}
+			tc.cfg.WebhookURL = &amcommoncfg.SecretURL{URL: u}
 			tc.cfg.HTTPConfig = &commoncfg.HTTPClientConfig{}
 			pd, err := New(tc.cfg, test.CreateTmpl(t), promslog.NewNopLogger())
 			require.NoError(t, err)
@@ -125,7 +126,7 @@ func TestMattermostRedactedURL(t *testing.T) {
 	secret := "secret"
 	notifier, err := New(
 		&config.MattermostConfig{
-			WebhookURL: &config.SecretURL{URL: u},
+			WebhookURL: &amcommoncfg.SecretURL{URL: u},
 			HTTPConfig: &commoncfg.HTTPClientConfig{},
 		},
 		test.CreateTmpl(t),

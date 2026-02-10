@@ -20,6 +20,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/alertmanager/config/mattermost"
+
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v2"
 )
@@ -1208,7 +1210,7 @@ value: some value
 
 	for _, tt := range mf {
 		t.Run(tt.name, func(t *testing.T) {
-			var cfg MattermostField
+			var cfg mattermost.MattermostField
 			err := yaml.UnmarshalStrict([]byte(tt.in), &cfg)
 
 			require.Equal(t, tt.expected, err)
@@ -1270,7 +1272,7 @@ attachments:
 
 	for _, tt := range mc {
 		t.Run(tt.name, func(t *testing.T) {
-			var cfg MattermostConfig
+			var cfg mattermost.MattermostConfig
 			err := yaml.UnmarshalStrict([]byte(tt.in), &cfg)
 
 			require.Equal(t, tt.expected, err)
