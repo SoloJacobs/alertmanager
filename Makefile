@@ -30,18 +30,14 @@ build-all: assets apiv2 build
 build: common-build
 
 .PHONY: lint
-lint: common-lint
+lint: assets common-lint
 
 .PHONY: assets
-assets: asset/assets_vfsdata.go
+assets: ui/app/scripts.js
 
 .PHONY: assets-tarball
 assets-tarball: ui/app/script.js ui/app/index.html
 	scripts/package_assets.sh
-
-asset/assets_vfsdata.go: ui/app/script.js ui/app/index.html ui/app/lib template/default.tmpl template/email.tmpl
-	$(GO) generate $(GOOPTS) ./asset
-	@$(GOFMT) -w ./asset
 
 ui/app/script.js: $(shell find ui/app/src -iname *.elm) api/v2/openapi.yaml
 	cd $(FRONTEND_DIR) && $(MAKE) script.js
@@ -69,7 +65,6 @@ fuzz-config:
 
 .PHONY: clean
 clean:
-	- @rm -rf asset/assets_vfsdata.go \
-                  template/email.tmpl \
-                  api/v2/models api/v2/restapi api/v2/client
+	- @rm -rf template/email.tmpl \
+            api/v2/models api/v2/restapi api/v2/client
 	- @cd $(FRONTEND_DIR) && $(MAKE) clean

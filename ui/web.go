@@ -24,7 +24,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/route"
 
-	"github.com/prometheus/alertmanager/asset"
+	"github.com/prometheus/alertmanager"
 )
 
 // Register registers handlers to serve files for the web interface.
@@ -35,7 +35,7 @@ func Register(r *route.Router, reloadCh chan<- chan error, logger *slog.Logger) 
 		disableCaching(w)
 
 		req.URL.Path = "/static/"
-		fs := http.FileServer(asset.Assets)
+		fs := http.FileServer(alertmanager.Assets)
 		fs.ServeHTTP(w, req)
 	})
 
@@ -43,7 +43,7 @@ func Register(r *route.Router, reloadCh chan<- chan error, logger *slog.Logger) 
 		disableCaching(w)
 
 		req.URL.Path = "/static/script.js"
-		fs := http.FileServer(asset.Assets)
+		fs := http.FileServer(alertmanager.Assets)
 		fs.ServeHTTP(w, req)
 	})
 
@@ -51,7 +51,7 @@ func Register(r *route.Router, reloadCh chan<- chan error, logger *slog.Logger) 
 		disableCaching(w)
 
 		req.URL.Path = "/static/favicon.ico"
-		fs := http.FileServer(asset.Assets)
+		fs := http.FileServer(alertmanager.Assets)
 		fs.ServeHTTP(w, req)
 	})
 
@@ -59,7 +59,7 @@ func Register(r *route.Router, reloadCh chan<- chan error, logger *slog.Logger) 
 		disableCaching(w)
 
 		req.URL.Path = path.Join("/static/lib", route.Param(req.Context(), "path"))
-		fs := http.FileServer(asset.Assets)
+		fs := http.FileServer(alertmanager.Assets)
 		fs.ServeHTTP(w, req)
 	})
 

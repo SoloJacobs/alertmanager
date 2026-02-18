@@ -34,7 +34,7 @@ import (
 	"golang.org/x/text/language"
 	"gopkg.in/yaml.v2"
 
-	"github.com/prometheus/alertmanager/asset"
+	"github.com/prometheus/alertmanager"
 	"github.com/prometheus/alertmanager/types"
 )
 
@@ -79,7 +79,7 @@ func FromGlobs(paths []string, options ...Option) (*Template, error) {
 	defaultTemplates := []string{"default.tmpl", "email.tmpl"}
 
 	for _, file := range defaultTemplates {
-		f, err := asset.Assets.Open(path.Join("/templates", file))
+		f, err := alertmanager.Assets.Open(path.Join("/templates", file))
 		if err != nil {
 			return nil, err
 		}

@@ -1,0 +1,3 @@
+Why is the dev dependency gone?
+//go:build dev
+
