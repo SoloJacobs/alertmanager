@@ -35,10 +35,6 @@ lint: assets common-lint
 .PHONY: assets
 assets: ui/app/scripts.js
 
-.PHONY: assets-tarball
-assets-tarball: ui/app/script.js ui/app/index.html
-	scripts/package_assets.sh
-
 ui/app/script.js: $(shell find ui/app/src -iname *.elm) api/v2/openapi.yaml
 	cd $(FRONTEND_DIR) && $(MAKE) script.js
 
