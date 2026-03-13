@@ -27,7 +27,7 @@ STATICCHECK_IGNORE =
 build-all: assets apiv2 build
 
 .PHONY: build
-build: common-build
+build: assets common-build
 
 .PHONY: lint
 lint: common-lint
