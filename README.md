@@ -41,8 +41,6 @@ $ alertmanager --config.file=<your_file>
 Or clone the repository and build manually:
 
 ```
-$ mkdir -p $GOPATH/src/github.com/prometheus
-$ cd $GOPATH/src/github.com/prometheus
 $ git clone https://github.com/prometheus/alertmanager.git
 $ cd alertmanager
 $ make build
