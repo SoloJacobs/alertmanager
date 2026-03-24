@@ -9,18 +9,22 @@ ifeq ($(NO_DOCKER), true)
   DOCKER_CMD=
 endif
 
+.PHONY: all
 all: src/Data build test
 
 node_modules: package-lock.json
 	npm ci
 
+.PHONY: format
 format: node_modules $(ELM_FILES)
 	@echo ">> format front-end code"
 	@npx elm-format --yes $(ELM_FILES)
 
+.PHONY: review
 review: node_modules
 	@npx elm-review --fix
 
+.PHONY: test
 test: node_modules
 	rm -rf elm-stuff/generated-code
 	@npx elm-format $(ELM_FILES) --validate
@@ -32,6 +36,7 @@ else
 	@npx elm-test
 endif
 
+.PHONY: dev-server
 dev-server:
 	npx elm reactor
 
