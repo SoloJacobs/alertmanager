@@ -5,6 +5,7 @@ ELM_FILES = $(shell find src -iname *.elm)
 JUNIT_DIR ?=
 DOCKER              ?= docker
 OPENAPI_GEN_IMAGE   ?= openapitools/openapi-generator-cli:v3.3.4
+UI_BUILD_IMAGE      ?= quay.io/prometheus/golang-builder:1.26-base #  Derived from ../../.promu.yml.
 
 .PHONY: all
 all: src/Data build test
@@ -57,6 +58,19 @@ src/Data: ../../api/v2/openapi.yaml
 	$(DOCKER) cp openapi-gen:/tmp/openapi-gen/src/Data src/Data; \
 	$(DOCKER) cp openapi-gen:/tmp/openapi-gen/src/DateTime.elm src/DateTime.elm
 	make format
+
+.PHONY: container-build
+container-build:
+	set -e; \
+	$(DOCKER) create \
+	  --name ui-elm-builder \
+	  --entrypoint sh \
+	  $(UI_BUILD_IMAGE) \
+	  -c "make test build"; \
+	trap "$(DOCKER) rm ui-elm-builder" EXIT; \
+	$(DOCKER) cp . ui-elm-builder:/app; \
+	$(DOCKER) start --attach ui-elm-builder; \
+	$(DOCKER) cp ui-elm-builder:/app/dist ./dist
 
 .PHONY: clean
 clean:
