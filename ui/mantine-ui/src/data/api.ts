@@ -126,7 +126,7 @@ export const useAPIQuery = <T>({
     refetchInterval,
     gcTime: 0,
     enabled,
-    queryFn: createQueryFn<T>({ pathPrefix, path, params, recordResponseTime }),
+    queryFn: createQueryFn<T>({ pathPrefix: import.meta.env.VITE_API_PREFIX ?? '', path, params, recordResponseTime }),
   });
 };
 
@@ -136,6 +136,6 @@ export const useSuspenseAPIQuery = <T>({ key, path, params }: QueryOptions) => {
     retry: false,
     refetchOnWindowFocus: false,
     gcTime: 0,
-    queryFn: createQueryFn({ pathPrefix, path, params }),
+    queryFn: createQueryFn({ pathPrefix: import.meta.env.VITE_API_PREFIX ?? '', path, params }),
   });
 };
