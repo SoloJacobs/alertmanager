@@ -16,6 +16,7 @@ package notify
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,6 +25,7 @@ import (
 	"reflect"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/common/promslog"
@@ -272,4 +274,85 @@ func TestGetFailureReasonFromStatusCode(t *testing.T) {
 			require.Equal(t, tc.expected, GetFailureReasonFromStatusCode(tc.statusCode))
 		})
 	}
+}
+
+func TestWithRetryPayload(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		statusCode     int
+		retryAfter     string
+		expectedReason Reason
+		expectedDelay  time.Duration
+	}{
+		{
+			name:           "429 with integer seconds",
+			statusCode:     http.StatusTooManyRequests,
+			retryAfter:     "7",
+			expectedReason: RateLimitedReason,
+			expectedDelay:  7 * time.Second,
+		},
+		{
+			name:           "429 without Retry-After",
+			statusCode:     http.StatusTooManyRequests,
+			expectedReason: RateLimitedReason,
+		},
+		{
+			name:           "429 with unparseable Retry-After",
+			statusCode:     http.StatusTooManyRequests,
+			retryAfter:     "soon",
+			expectedReason: RateLimitedReason,
+		},
+		{
+			name:           "429 with negative Retry-After is discarded",
+			statusCode:     http.StatusTooManyRequests,
+			retryAfter:     "-5",
+			expectedReason: RateLimitedReason,
+		},
+		{
+			// The scope is deliberately 429 only, even though Retry-After is
+			// also valid on a 503.
+			name:           "Retry-After on a non-429 is ignored",
+			statusCode:     http.StatusServiceUnavailable,
+			retryAfter:     "7",
+			expectedReason: ServerErrorReason,
+		},
+		{
+			name:           "401 maps to auth error",
+			statusCode:     http.StatusUnauthorized,
+			expectedReason: AuthErrorReason,
+		},
+		{
+			name:           "400 maps to client error",
+			statusCode:     http.StatusBadRequest,
+			expectedReason: ClientErrorReason,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			header := make(http.Header)
+			if tc.retryAfter != "" {
+				header.Set("Retry-After", tc.retryAfter)
+			}
+			resp := &http.Response{StatusCode: tc.statusCode, Header: header}
+
+			e := WithRetryPayload(resp, errors.New("unexpected status code"))
+
+			require.Equal(t, tc.expectedReason, e.Reason)
+			require.Equal(t, tc.expectedDelay, e.RetryAfter)
+			require.EqualError(t, e, "unexpected status code")
+		})
+	}
+}
+
+func TestWithRetryPayloadHTTPDate(t *testing.T) {
+	header := make(http.Header)
+	header.Set("Retry-After", time.Now().Add(2*time.Second).UTC().Format(http.TimeFormat))
+	resp := &http.Response{StatusCode: http.StatusTooManyRequests, Header: header}
+
+	e := WithRetryPayload(resp, errors.New("unexpected status code"))
+
+	require.Equal(t, RateLimitedReason, e.Reason)
+	// An HTTP-date is resolved against the wall clock, so assert a positive
+	// value near the requested one rather than an exact match.
+	require.Greater(t, e.RetryAfter, time.Duration(0))
+	require.InDelta(t, 2.0, e.RetryAfter.Seconds(), 1.0)
 }

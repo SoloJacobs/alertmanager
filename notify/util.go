@@ -23,7 +23,9 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	commoncfg "github.com/prometheus/common/config"
 	"github.com/prometheus/common/version"
@@ -239,6 +241,28 @@ type Retrier struct {
 	RetryCodes []int
 }
 
+// parseRetryAfter parses the Retry-After header value, which can be either
+// a delay in seconds (integer) or an HTTP-date. Returns zero if absent or unparseable.
+func parseRetryAfter(h http.Header) time.Duration {
+	val := h.Get("Retry-After")
+	if val == "" {
+		return 0
+	}
+	// Try integer seconds first.
+	if secs, err := strconv.Atoi(val); err == nil {
+		return time.Duration(secs) * time.Second
+	}
+	// Try HTTP-date format.
+	if t, err := http.ParseTime(val); err == nil {
+		d := time.Until(t)
+		if d < 0 {
+			return 0
+		}
+		return d
+	}
+	return 0
+}
+
 // Check returns a boolean indicating whether the request should be retried
 // and an optional error if the request has failed. If body is not nil, it will
 // be included in the error message.
@@ -264,10 +288,28 @@ func (r *Retrier) Check(statusCode int, body io.Reader) (bool, error) {
 	return retry, errors.New(s)
 }
 
+// WithRetryPayload attaches the delay a rate-limited receiver asked for, along
+// with the failure reason derived from the status code. It replaces the
+// NewErrorWithReason call that follows Check in every notifier, rather than
+// wrapping around it: errors.As returns the first match walking down a chain,
+// so a second ErrorWithReason above this one would shadow the delay with a zero.
+func WithRetryPayload(resp *http.Response, err error) *ErrorWithReason {
+	e := NewErrorWithReason(GetFailureReasonFromStatusCode(resp.StatusCode), err)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		// parseRetryAfter passes through a negative delay for a negative header
+		// value, which would schedule the next attempt immediately.
+		if d := parseRetryAfter(resp.Header); d > 0 {
+			e.RetryAfter = d
+		}
+	}
+	return e
+}
+
 type ErrorWithReason struct {
 	Err error
 
-	Reason Reason
+	Reason     Reason
+	RetryAfter time.Duration
 }
 
 func NewErrorWithReason(reason Reason, err error) *ErrorWithReason {
