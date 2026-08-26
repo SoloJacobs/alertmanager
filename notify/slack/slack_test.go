@@ -50,7 +50,8 @@ func TestSlackRetry(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	for statusCode, expected := range test.RetryTests(test.DefaultRetryCodes()) {
+	retryCodes := append(test.DefaultRetryCodes(), http.StatusTooManyRequests)
+	for statusCode, expected := range test.RetryTests(retryCodes) {
 		actual, _ := notifier.retrier.Check(statusCode, nil)
 		require.Equal(t, expected, actual, "error on status %d", statusCode)
 	}
@@ -126,6 +127,9 @@ func TestNotifier_Notify_WithReason(t *testing.T) {
 		expectedErr    string
 		expectedRetry  bool
 		noError        bool
+
+		retryAfterHeader   string
+		expectedRetryAfter time.Duration
 	}{
 		{
 			name:           "with a 4xx status code",
@@ -140,6 +144,22 @@ func TestNotifier_Notify_WithReason(t *testing.T) {
 			expectedReason: notify.ServerErrorReason,
 			expectedRetry:  true,
 			expectedErr:    "unexpected status code 500",
+		},
+		{
+			name:               "rate limited with Retry-After",
+			statusCode:         http.StatusTooManyRequests,
+			retryAfterHeader:   "7",
+			expectedReason:     notify.RateLimitedReason,
+			expectedRetry:      true,
+			expectedErr:        "unexpected status code 429",
+			expectedRetryAfter: 7 * time.Second,
+		},
+		{
+			name:           "rate limited without Retry-After",
+			statusCode:     http.StatusTooManyRequests,
+			expectedReason: notify.RateLimitedReason,
+			expectedRetry:  true,
+			expectedErr:    "unexpected status code 429",
 		},
 		{
 			name:           "with a 3xx status code",
@@ -212,6 +232,9 @@ func TestNotifier_Notify_WithReason(t *testing.T) {
 				if strings.HasPrefix(tt.responseBody, "{") {
 					resp.Header().Add("Content-Type", "application/json; charset=utf-8")
 				}
+				if tt.retryAfterHeader != "" {
+					resp.Header().Set("Retry-After", tt.retryAfterHeader)
+				}
 				resp.WriteHeader(tt.statusCode)
 				resp.WriteString(tt.responseBody)
 				return resp.Result(), nil
@@ -233,6 +256,7 @@ func TestNotifier_Notify_WithReason(t *testing.T) {
 				var reasonError *notify.ErrorWithReason
 				require.ErrorAs(t, err, &reasonError)
 				require.Equal(t, tt.expectedReason, reasonError.Reason)
+				require.Equal(t, tt.expectedRetryAfter, reasonError.RetryAfter)
 				require.Contains(t, err.Error(), tt.expectedErr)
 				require.Contains(t, err.Error(), "channelname")
 			}

@@ -48,7 +48,7 @@ func New(c *config.SlackConfig, t *template.Template, l *slog.Logger, httpOpts .
 		tmpl:         t,
 		logger:       l,
 		client:       client,
-		retrier:      &notify.Retrier{},
+		retrier:      &notify.Retrier{RetryCodes: []int{http.StatusTooManyRequests}},
 		postJSONFunc: notify.PostJSON,
 	}, nil
 }
@@ -209,7 +209,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 	retry, err := n.retrier.Check(resp.StatusCode, resp.Body)
 	if err != nil {
 		err = fmt.Errorf("channel %q: %w", req.Channel, err)
-		return retry, notify.NewErrorWithReason(notify.GetFailureReasonFromStatusCode(resp.StatusCode), err)
+		return retry, notify.WithRetryPayload(resp, err)
 	}
 
 	retry, err = n.slackResponseHandler(resp, store)
