@@ -101,6 +101,8 @@ func TestReplay(t *testing.T) {
 		replays.Go(flushes.Run)
 		replays.Wait()
 
+		flushes.report(t)
+
 		// The last alerts put are still on their way to the inhibitor, which
 		// has no timer to wait on: it is done once it blocks on the
 		// subscription again.
@@ -129,6 +131,12 @@ type flushLog struct {
 	line   int
 	out    io.Writer
 	muter  notify.Muter
+
+	// Counted over the whole replay. Run is the only writer.
+	flushes    int
+	asked      int
+	muted      int
+	fullyMuted int
 }
 
 func newFlushLog(path string, out io.Writer, muter notify.Muter) (*flushLog, error) {
@@ -189,9 +197,38 @@ func (l *flushLog) replay(line []byte) {
 	fmt.Fprintf(l.out, "%s\n", line)
 
 	// The pipeline asks about every alert of the flush, one at a time.
+	muted := 0
 	for _, a := range rec.Alerts {
-		l.muter.Mutes(context.Background(), a.Labels)
+		if l.muter.Mutes(context.Background(), a.Labels) {
+			muted++
+		}
 	}
+
+	l.flushes++
+	l.asked += len(rec.Alerts)
+	l.muted += muted
+	if muted > 0 && muted == len(rec.Alerts) {
+		l.fullyMuted++
+	}
+}
+
+// report writes what the replay asked the muter and what it answered. A flush
+// counts as fully muted when every alert in it was, which is what leaves a
+// production pipeline with nothing left to notify about.
+func (l *flushLog) report(t *testing.T) {
+	t.Helper()
+
+	t.Logf("flushes: %d", l.flushes)
+	t.Logf("Mutes calls: %d", l.asked)
+	t.Logf("alerts muted: %d (%s)", l.muted, share(l.muted, l.asked))
+	t.Logf("flushes fully muted: %d (%s)", l.fullyMuted, share(l.fullyMuted, l.flushes))
+}
+
+func share(part, total int) string {
+	if total == 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.2f%%", 100*float64(part)/float64(total))
 }
 
 func (l *flushLog) Close() error {
