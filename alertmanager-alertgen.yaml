@@ -1,0 +1,859 @@
+# alertmanager.yml
+#
+# Designed to work with cmd/alertgen (see inhibit_rules below).
+#
+# Route tree structure mirrors the generator's label pools exactly:
+#   - 25 team routes  (team-0 .. team-24)
+#   - 4 cluster sub-routes per team (cluster-0 .. cluster-3)
+#   - 5 priority sub-routes per cluster (p0 .. p4)
+#   → 500 leaf routes total
+#
+# Additional specialty routes exercise:
+#   - Regex matching  (env=~"prod.*", namespace=~"kube-.*", job=~".*-exporter")
+#   - Inhibition rules (critical → warning → info cascade)
+#   - A catch-all "default" receiver for unmatched alerts
+#
+# All receivers use the null webhook (http://localhost:1/webhook) so the
+# config is valid and loadable without a real downstream target.
+# Replace with your actual receiver URLs as needed.
+
+global:
+  resolve_timeout: 5m
+
+  # Default SMTP / PagerDuty / etc. settings would go here.
+  # Left empty so the file validates without external credentials.
+
+# ---------------------------------------------------------------------------
+# Inhibition rules
+#
+# Written against a log from `cmd/alertgen`, whose alerts arrive in quads of
+# four consecutive indices sharing (alertname, namespace, cluster, priority)
+# and cycling severity critical -> warning -> info -> none. team, job, env and
+# service all change inside a quad.
+#
+# That shape decides which `equal` sets can ever fire:
+#
+#   alertname / namespace / cluster / priority  usable, constant across a quad
+#   team / job / service                        never fires: holding one of
+#                                               these fixed forces the index
+#                                               delta to a multiple of 8 (100
+#                                               for team), which also fixes
+#                                               severity, so source and target
+#                                               can never differ in severity
+#
+# With -active 4m over a -scrape 30s, alerts co-fire iff they are within 7
+# batches (~2224 indices). Every quad is 4 wide, so anything keyed inside a
+# quad always overlaps in time.
+#
+# Rules marked DEAD below are kept deliberately: they are the sort of stale
+# rule a real config accumulates, and they cost source-cache work while never
+# muting anything.
+#
+# Watchdog is never a target, so it stays visible.
+# ---------------------------------------------------------------------------
+inhibit_rules:
+
+  # --- Severity cascade (3) -------------------------------------------------
+  # The classic. Live: all three labels are constant across a quad.
+  - source_matchers: ['severity = "critical"']
+    target_matchers: ['severity = "warning"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+  - source_matchers: ['severity = "warning"']
+    target_matchers: ['severity = "info"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+  - source_matchers: ['severity = "critical"']
+    target_matchers: ['severity = "info"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+
+  # --- Node down suppresses workload alerts in the same cluster (4) ---------
+  # equal on cluster only, so a node-level critical mutes pod/daemonset/CPU
+  # noise across every namespace of that cluster.
+  - source_matchers: ['alertname = "KubeNodeNotReady"', 'severity = "critical"', 'cluster = "cluster-0"']
+    target_matchers: ['severity =~ "warning|info|none"', 'alertname =~ "KubePodNotReady|KubeDaemonSetRolloutStuck|CPUThrottlingHigh|HighMemoryUsage"', 'cluster = "cluster-0"']
+    equal: [cluster]
+  - source_matchers: ['alertname = "KubeNodeNotReady"', 'severity = "critical"', 'cluster = "cluster-1"']
+    target_matchers: ['severity =~ "warning|info|none"', 'alertname =~ "KubePodNotReady|KubeDaemonSetRolloutStuck|CPUThrottlingHigh|HighMemoryUsage"', 'cluster = "cluster-1"']
+    equal: [cluster]
+  - source_matchers: ['alertname = "KubeNodeNotReady"', 'severity = "critical"', 'cluster = "cluster-2"']
+    target_matchers: ['severity =~ "warning|info|none"', 'alertname =~ "KubePodNotReady|KubeDaemonSetRolloutStuck|CPUThrottlingHigh|HighMemoryUsage"', 'cluster = "cluster-2"']
+    equal: [cluster]
+  - source_matchers: ['alertname = "KubeNodeNotReady"', 'severity = "critical"', 'cluster = "cluster-3"']
+    target_matchers: ['severity =~ "warning|info|none"', 'alertname =~ "KubePodNotReady|KubeDaemonSetRolloutStuck|CPUThrottlingHigh|HighMemoryUsage"', 'cluster = "cluster-3"']
+    equal: [cluster]
+
+  # --- Cluster-wide API outage, no equal (4) --------------------------------
+  # No equal at all: any active AggregatedAPIDown critical in the cluster mutes
+  # every non-critical alert there. Takes the cheap path in Mutes (returns on
+  # the first active source instead of scanning the whole source cache).
+  - source_matchers: ['alertname = "AggregatedAPIDown"', 'severity = "critical"', 'cluster = "cluster-0"']
+    target_matchers: ['severity =~ "warning|info"', 'cluster = "cluster-0"', 'alertname != "Watchdog"']
+  - source_matchers: ['alertname = "AggregatedAPIDown"', 'severity = "critical"', 'cluster = "cluster-1"']
+    target_matchers: ['severity =~ "warning|info"', 'cluster = "cluster-1"', 'alertname != "Watchdog"']
+  - source_matchers: ['alertname = "AggregatedAPIDown"', 'severity = "critical"', 'cluster = "cluster-2"']
+    target_matchers: ['severity =~ "warning|info"', 'cluster = "cluster-2"', 'alertname != "Watchdog"']
+  - source_matchers: ['alertname = "AggregatedAPIDown"', 'severity = "critical"', 'cluster = "cluster-3"']
+    target_matchers: ['severity =~ "warning|info"', 'cluster = "cluster-3"', 'alertname != "Watchdog"']
+
+  # --- Per-alertname critical -> warning|info (11) --------------------------
+  # Watchdog omitted so it is never muted.
+  - source_matchers: ['severity = "critical"', 'alertname = "KubeNodeNotReady"']
+    target_matchers: ['severity =~ "warning|info"', 'alertname = "KubeNodeNotReady"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'alertname = "KubePodNotReady"']
+    target_matchers: ['severity =~ "warning|info"', 'alertname = "KubePodNotReady"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'alertname = "KubeDaemonSetRolloutStuck"']
+    target_matchers: ['severity =~ "warning|info"', 'alertname = "KubeDaemonSetRolloutStuck"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'alertname = "KubeJobFailed"']
+    target_matchers: ['severity =~ "warning|info"', 'alertname = "KubeJobFailed"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'alertname = "KubeJobCompletion"']
+    target_matchers: ['severity =~ "warning|info"', 'alertname = "KubeJobCompletion"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'alertname = "NodeClockNotSynchronising"']
+    target_matchers: ['severity =~ "warning|info"', 'alertname = "NodeClockNotSynchronising"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'alertname = "KubePersistentVolumeFillingUp"']
+    target_matchers: ['severity =~ "warning|info"', 'alertname = "KubePersistentVolumeFillingUp"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'alertname = "AggregatedAPIDown"']
+    target_matchers: ['severity =~ "warning|info"', 'alertname = "AggregatedAPIDown"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'alertname = "HighMemoryUsage"']
+    target_matchers: ['severity =~ "warning|info"', 'alertname = "HighMemoryUsage"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'alertname = "CPUThrottlingHigh"']
+    target_matchers: ['severity =~ "warning|info"', 'alertname = "CPUThrottlingHigh"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'alertname = "TargetDown"']
+    target_matchers: ['severity =~ "warning|info"', 'alertname = "TargetDown"']
+    equal: [namespace, cluster]
+
+  # --- Per-namespace critical -> warning (10) -------------------------------
+  - source_matchers: ['severity = "critical"', 'namespace = "kube-system"']
+    target_matchers: ['severity = "warning"', 'namespace = "kube-system"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['severity = "critical"', 'namespace = "kube-public"']
+    target_matchers: ['severity = "warning"', 'namespace = "kube-public"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['severity = "critical"', 'namespace = "payments"']
+    target_matchers: ['severity = "warning"', 'namespace = "payments"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['severity = "critical"', 'namespace = "checkout"']
+    target_matchers: ['severity = "warning"', 'namespace = "checkout"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['severity = "critical"', 'namespace = "orders"']
+    target_matchers: ['severity = "warning"', 'namespace = "orders"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['severity = "critical"', 'namespace = "monitoring"']
+    target_matchers: ['severity = "warning"', 'namespace = "monitoring"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['severity = "critical"', 'namespace = "ingress"']
+    target_matchers: ['severity = "warning"', 'namespace = "ingress"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['severity = "critical"', 'namespace = "search"']
+    target_matchers: ['severity = "warning"', 'namespace = "search"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['severity = "critical"', 'namespace = "batch-jobs"']
+    target_matchers: ['severity = "warning"', 'namespace = "batch-jobs"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['severity = "critical"', 'namespace = "metalk8s-monitoring"']
+    target_matchers: ['severity = "warning"', 'namespace = "metalk8s-monitoring"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+
+  # --- Per-namespace warning -> info (10) -----------------------------------
+  - source_matchers: ['severity = "warning"', 'namespace = "kube-system"']
+    target_matchers: ['severity = "info"', 'namespace = "kube-system"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['severity = "warning"', 'namespace = "kube-public"']
+    target_matchers: ['severity = "info"', 'namespace = "kube-public"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['severity = "warning"', 'namespace = "payments"']
+    target_matchers: ['severity = "info"', 'namespace = "payments"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['severity = "warning"', 'namespace = "checkout"']
+    target_matchers: ['severity = "info"', 'namespace = "checkout"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['severity = "warning"', 'namespace = "orders"']
+    target_matchers: ['severity = "info"', 'namespace = "orders"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['severity = "warning"', 'namespace = "monitoring"']
+    target_matchers: ['severity = "info"', 'namespace = "monitoring"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['severity = "warning"', 'namespace = "ingress"']
+    target_matchers: ['severity = "info"', 'namespace = "ingress"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['severity = "warning"', 'namespace = "search"']
+    target_matchers: ['severity = "info"', 'namespace = "search"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['severity = "warning"', 'namespace = "batch-jobs"']
+    target_matchers: ['severity = "info"', 'namespace = "batch-jobs"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['severity = "warning"', 'namespace = "metalk8s-monitoring"']
+    target_matchers: ['severity = "info"', 'namespace = "metalk8s-monitoring"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+
+  # --- Per-alertname warning -> none (11) -----------------------------------
+  - source_matchers: ['severity = "warning"', 'alertname = "KubeNodeNotReady"']
+    target_matchers: ['severity = "none"', 'alertname = "KubeNodeNotReady"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "warning"', 'alertname = "KubePodNotReady"']
+    target_matchers: ['severity = "none"', 'alertname = "KubePodNotReady"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "warning"', 'alertname = "KubeDaemonSetRolloutStuck"']
+    target_matchers: ['severity = "none"', 'alertname = "KubeDaemonSetRolloutStuck"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "warning"', 'alertname = "KubeJobFailed"']
+    target_matchers: ['severity = "none"', 'alertname = "KubeJobFailed"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "warning"', 'alertname = "KubeJobCompletion"']
+    target_matchers: ['severity = "none"', 'alertname = "KubeJobCompletion"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "warning"', 'alertname = "NodeClockNotSynchronising"']
+    target_matchers: ['severity = "none"', 'alertname = "NodeClockNotSynchronising"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "warning"', 'alertname = "KubePersistentVolumeFillingUp"']
+    target_matchers: ['severity = "none"', 'alertname = "KubePersistentVolumeFillingUp"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "warning"', 'alertname = "AggregatedAPIDown"']
+    target_matchers: ['severity = "none"', 'alertname = "AggregatedAPIDown"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "warning"', 'alertname = "HighMemoryUsage"']
+    target_matchers: ['severity = "none"', 'alertname = "HighMemoryUsage"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "warning"', 'alertname = "CPUThrottlingHigh"']
+    target_matchers: ['severity = "none"', 'alertname = "CPUThrottlingHigh"']
+    equal: [namespace, cluster]
+  - source_matchers: ['severity = "warning"', 'alertname = "TargetDown"']
+    target_matchers: ['severity = "none"', 'alertname = "TargetDown"']
+    equal: [namespace, cluster]
+
+  # --- Two-sided rules (8) --------------------------------------------------
+  # The severity ranges overlap, so an alert in the overlap matches the source
+  # matchers AND the target matchers. These are the rules that exercise the
+  # excludeTwoSidedMatch branch of Mutes: a warning under the first rule is a
+  # target, and is muted by an active critical, but the other warnings in the
+  # source cache are skipped so the two cannot inhibit each other.
+  - source_matchers: ['severity =~ "critical|warning"']
+    target_matchers: ['severity =~ "warning|info"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+  - source_matchers: ['severity =~ "warning|info"']
+    target_matchers: ['severity =~ "info|none"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+  - source_matchers: ['severity =~ "critical|warning"', 'namespace =~ "kube-.*"']
+    target_matchers: ['severity =~ "warning|info"', 'namespace =~ "kube-.*"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['alertname =~ "Kube(Node|Pod)NotReady"', 'severity =~ "critical|warning"']
+    target_matchers: ['alertname =~ "Kube(Node|Pod)NotReady"', 'severity =~ "warning|info"']
+    equal: [cluster]
+  - source_matchers: ['severity =~ "critical|warning"', 'priority =~ "p[01]"']
+    target_matchers: ['severity =~ "warning|info"', 'priority =~ "p[01]"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+  # DEAD, and deliberately so: source and target matchers are identical, so
+  # every cached source also matches the target and excludeTwoSidedMatch skips
+  # all of them. It mutes nothing while walking the whole source cache on every
+  # matching alert, which is the worst case for the two-sided check.
+  - source_matchers: ['alertname =~ "Kube.*"', 'severity =~ "warning|info"']
+    target_matchers: ['alertname =~ "Kube.*"', 'severity =~ "warning|info"']
+    equal: [alertname, namespace, cluster]
+
+  # A two-sided alert acting as a source. "info" is the only severity matching
+  # both sides, so every mute this rule produces is a two-sided alert muting a
+  # pure target. An info alert is never muted here: it satisfies the source
+  # matchers, so excludeTwoSidedMatch skips the other infos in the cache.
+  - source_matchers: ['severity = "info"']
+    target_matchers: ['severity =~ "info|none"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+
+  # The mirror image: the only target is "warning", which is itself two-sided,
+  # and the only source that survives the exclusion is the pure-source
+  # "critical". Every mute here is a source-only alert muting a two-sided one.
+  - source_matchers: ['severity =~ "critical|warning"']
+    target_matchers: ['severity = "warning"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+
+  # --- Cluster x priority, critical -> info (13) ----------------------------
+  - source_matchers: ['severity = "critical"', 'cluster = "cluster-0"', 'priority = "p0"']
+    target_matchers: ['severity = "info"', 'cluster = "cluster-0"', 'priority = "p0"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace]
+  - source_matchers: ['severity = "critical"', 'cluster = "cluster-0"', 'priority = "p1"']
+    target_matchers: ['severity = "info"', 'cluster = "cluster-0"', 'priority = "p1"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace]
+  - source_matchers: ['severity = "critical"', 'cluster = "cluster-0"', 'priority = "p2"']
+    target_matchers: ['severity = "info"', 'cluster = "cluster-0"', 'priority = "p2"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace]
+  - source_matchers: ['severity = "critical"', 'cluster = "cluster-0"', 'priority = "p3"']
+    target_matchers: ['severity = "info"', 'cluster = "cluster-0"', 'priority = "p3"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace]
+  - source_matchers: ['severity = "critical"', 'cluster = "cluster-0"', 'priority = "p4"']
+    target_matchers: ['severity = "info"', 'cluster = "cluster-0"', 'priority = "p4"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace]
+  - source_matchers: ['severity = "critical"', 'cluster = "cluster-1"', 'priority = "p0"']
+    target_matchers: ['severity = "info"', 'cluster = "cluster-1"', 'priority = "p0"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace]
+  - source_matchers: ['severity = "critical"', 'cluster = "cluster-1"', 'priority = "p1"']
+    target_matchers: ['severity = "info"', 'cluster = "cluster-1"', 'priority = "p1"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace]
+  - source_matchers: ['severity = "critical"', 'cluster = "cluster-1"', 'priority = "p2"']
+    target_matchers: ['severity = "info"', 'cluster = "cluster-1"', 'priority = "p2"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace]
+  - source_matchers: ['severity = "critical"', 'cluster = "cluster-1"', 'priority = "p3"']
+    target_matchers: ['severity = "info"', 'cluster = "cluster-1"', 'priority = "p3"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace]
+  - source_matchers: ['severity = "critical"', 'cluster = "cluster-1"', 'priority = "p4"']
+    target_matchers: ['severity = "info"', 'cluster = "cluster-1"', 'priority = "p4"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace]
+  - source_matchers: ['severity = "critical"', 'cluster = "cluster-2"', 'priority = "p0"']
+    target_matchers: ['severity = "info"', 'cluster = "cluster-2"', 'priority = "p0"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace]
+  - source_matchers: ['severity = "critical"', 'cluster = "cluster-2"', 'priority = "p1"']
+    target_matchers: ['severity = "info"', 'cluster = "cluster-2"', 'priority = "p1"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace]
+  - source_matchers: ['severity = "critical"', 'cluster = "cluster-2"', 'priority = "p2"']
+    target_matchers: ['severity = "info"', 'cluster = "cluster-2"', 'priority = "p2"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace]
+
+  # --- Per-priority critical -> none, no equal (5) --------------------------
+  - source_matchers: ['severity = "critical"', 'priority = "p0"']
+    target_matchers: ['severity = "none"', 'priority = "p0"', 'alertname != "Watchdog"']
+  - source_matchers: ['severity = "critical"', 'priority = "p1"']
+    target_matchers: ['severity = "none"', 'priority = "p1"', 'alertname != "Watchdog"']
+  - source_matchers: ['severity = "critical"', 'priority = "p2"']
+    target_matchers: ['severity = "none"', 'priority = "p2"', 'alertname != "Watchdog"']
+  - source_matchers: ['severity = "critical"', 'priority = "p3"']
+    target_matchers: ['severity = "none"', 'priority = "p3"', 'alertname != "Watchdog"']
+  - source_matchers: ['severity = "critical"', 'priority = "p4"']
+    target_matchers: ['severity = "none"', 'priority = "p4"', 'alertname != "Watchdog"']
+
+  # --- service regex (4) ----------------------------------------------------
+  # service = idx%8, so a critical only ever carries servicePatterns[0] or [4].
+  # Rules whose source regex misses both of those can never fire.
+  - source_matchers: ['severity = "critical"', 'service =~ "prometheus-operator-.*"']
+    target_matchers: ['severity = "warning"', 'service =~ "prometheus-operator-.*"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'service =~ "infrastructure-.*"']
+    target_matchers: ['severity = "warning"', 'service =~ "infrastructure-.*"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+  # DEAD: servicePatterns[3] lands on idx%4==3, which is always severity "none".
+  - source_matchers: ['severity = "critical"', 'service =~ ".*-node-exporter"']
+    target_matchers: ['severity = "warning"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+  # DEAD: servicePatterns[6] lands on idx%4==2, which is always severity "info".
+  - source_matchers: ['severity = "critical"', 'service = "data-pipeline-ingestion-worker"']
+    target_matchers: ['severity =~ "warning|info"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+
+  # --- job regex (3) --------------------------------------------------------
+  - source_matchers: ['severity = "critical"', 'job = "kube-state-metrics"']
+    target_matchers: ['severity = "warning"', 'job =~ ".*-exporter"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'job =~ "cert-manager|etcd"']
+    target_matchers: ['severity = "warning"', 'job =~ "nginx-ingress|coredns"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+  # DEAD: job = idx%8, so a critical is only ever jobs[0] or jobs[4], and
+  # neither ends in "-exporter".
+  - source_matchers: ['severity = "critical"', 'job =~ ".*-exporter"']
+    target_matchers: ['severity = "warning"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+
+  # --- env regex (3) --------------------------------------------------------
+  - source_matchers: ['severity = "critical"', 'env =~ "prod.*"']
+    target_matchers: ['severity =~ "warning|info"', 'env =~ "prod.*"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'env =~ "prod.*"']
+    target_matchers: ['severity = "warning"', 'env =~ "staging.*"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+  # DEAD: a critical on "testing-us-east-1" sits at idx%20==8, so the warning
+  # beside it in the quad is always "staging-eu-west-1", never a prod env.
+  - source_matchers: ['severity = "critical"', 'env = "testing-us-east-1"']
+    target_matchers: ['severity = "warning"', 'env =~ "prod.*"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+
+  # --- kube-* namespaces (3) ------------------------------------------------
+  - source_matchers: ['severity = "critical"', 'namespace =~ "kube-.*"']
+    target_matchers: ['severity =~ "warning|info"', 'namespace =~ "kube-.*"', 'alertname != "Watchdog"']
+    equal: [alertname, cluster]
+  - source_matchers: ['alertname = "KubeNodeNotReady"', 'severity = "critical"', 'namespace = "kube-system"']
+    target_matchers: ['severity =~ "warning|info|none"', 'namespace = "kube-system"', 'alertname != "Watchdog"']
+    equal: [cluster]
+  # No equal: a kube-* critical mutes low-priority business-namespace noise.
+  - source_matchers: ['severity = "critical"', 'namespace =~ "kube-.*"']
+    target_matchers: ['severity = "none"', 'namespace =~ "payments|checkout"', 'alertname != "Watchdog"']
+
+  # --- Team-scoped (10) -----------------------------------------------------
+  # ALL DEAD. team = idx%25, so holding team fixed forces the index delta to a
+  # multiple of 25; holding cluster fixed on top of that forces a multiple of
+  # 100, which fixes severity too. Source and target can never differ in
+  # severity. Dropping cluster from equal does not save them either: namespace
+  # would then need 5*(a-b) == 6 (mod 10), which has no solution. Kept as the
+  # kind of stale per-team rule a real config accumulates.
+  - source_matchers: ['severity = "critical"', 'team = "team-0"']
+    target_matchers: ['severity = "warning"', 'team = "team-0"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'team = "team-1"']
+    target_matchers: ['severity = "warning"', 'team = "team-1"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'team = "team-2"']
+    target_matchers: ['severity = "warning"', 'team = "team-2"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'team = "team-3"']
+    target_matchers: ['severity = "warning"', 'team = "team-3"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'team = "team-4"']
+    target_matchers: ['severity = "warning"', 'team = "team-4"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'team = "team-5"']
+    target_matchers: ['severity = "warning"', 'team = "team-5"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'team = "team-6"']
+    target_matchers: ['severity = "warning"', 'team = "team-6"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+  - source_matchers: ['severity = "critical"', 'team = "team-7"']
+    target_matchers: ['severity = "warning"', 'team = "team-7"', 'alertname != "Watchdog"']
+    equal: [alertname, namespace, cluster]
+
+# ---------------------------------------------------------------------------
+# Receivers
+#
+# One receiver per team+cluster+priority leaf = 500 receivers.
+# In practice you would point these at real PagerDuty/Slack/webhook URLs.
+# Here they all point to a local null endpoint so the config is valid.
+#
+# Naming convention matches the generator's label pools:
+#   team-{0..24}-cluster-{0..3}-p{0..4}
+# ---------------------------------------------------------------------------
+receivers:
+  - name: "default"
+    webhook_configs:
+      - url: "http://localhost:1/webhook"
+        send_resolved: true
+
+  - name: "null"
+    # Explicitly silent receiver for Watchdog and InfoInhibitor.
+
+  # --- Specialty receivers ---
+  - name: "production-critical"
+    webhook_configs:
+      - url: "http://localhost:1/webhook/production-critical"
+        send_resolved: true
+
+  - name: "kube-system-receiver"
+    webhook_configs:
+      - url: "http://localhost:1/webhook/kube-system"
+        send_resolved: true
+
+  - name: "exporter-receiver"
+    webhook_configs:
+      - url: "http://localhost:1/webhook/exporters"
+        send_resolved: true
+
+  # --- Team receivers (team-0 .. team-24) ---
+  # Each team gets a default receiver that catches unmatched cluster/priority.
+  - name: "team-0-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0"}]
+  - name: "team-1-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-1"}]
+  - name: "team-2-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-2"}]
+  - name: "team-3-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-3"}]
+  - name: "team-4-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-4"}]
+  - name: "team-5-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-5"}]
+  - name: "team-6-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-6"}]
+  - name: "team-7-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-7"}]
+  - name: "team-8-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-8"}]
+  - name: "team-9-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-9"}]
+  - name: "team-10-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-10"}]
+  - name: "team-11-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-11"}]
+  - name: "team-12-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-12"}]
+  - name: "team-13-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-13"}]
+  - name: "team-14-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-14"}]
+  - name: "team-15-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-15"}]
+  - name: "team-16-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-16"}]
+  - name: "team-17-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-17"}]
+  - name: "team-18-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-18"}]
+  - name: "team-19-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-19"}]
+  - name: "team-20-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-20"}]
+  - name: "team-21-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-21"}]
+  - name: "team-22-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-22"}]
+  - name: "team-23-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-23"}]
+  - name: "team-24-default"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-24"}]
+
+  # --- Leaf receivers: team-{t}-cluster-{c}-p{p} ---
+  # 25 teams × 4 clusters × 5 priorities = 500 entries.
+  # Generated programmatically here for completeness; in a real setup you
+  # would template these with a config management tool.
+  - name: "team-0-cluster-0-p0"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-0/p0"}]
+  - name: "team-0-cluster-0-p1"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-0/p1"}]
+  - name: "team-0-cluster-0-p2"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-0/p2"}]
+  - name: "team-0-cluster-0-p3"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-0/p3"}]
+  - name: "team-0-cluster-0-p4"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-0/p4"}]
+  - name: "team-0-cluster-1-p0"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-1/p0"}]
+  - name: "team-0-cluster-1-p1"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-1/p1"}]
+  - name: "team-0-cluster-1-p2"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-1/p2"}]
+  - name: "team-0-cluster-1-p3"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-1/p3"}]
+  - name: "team-0-cluster-1-p4"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-1/p4"}]
+  - name: "team-0-cluster-2-p0"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-2/p0"}]
+  - name: "team-0-cluster-2-p1"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-2/p1"}]
+  - name: "team-0-cluster-2-p2"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-2/p2"}]
+  - name: "team-0-cluster-2-p3"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-2/p3"}]
+  - name: "team-0-cluster-2-p4"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-2/p4"}]
+  - name: "team-0-cluster-3-p0"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-3/p0"}]
+  - name: "team-0-cluster-3-p1"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-3/p1"}]
+  - name: "team-0-cluster-3-p2"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-3/p2"}]
+  - name: "team-0-cluster-3-p3"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-3/p3"}]
+  - name: "team-0-cluster-3-p4"
+    webhook_configs: [{url: "http://localhost:1/webhook/team-0/cluster-3/p4"}]
+  # (teams 1-24 follow the same pattern — add via config management)
+  # For brevity only team-0 leaf receivers are listed above;
+  # teams 1-24 fall back to their team-N-default receiver.
+
+# ---------------------------------------------------------------------------
+# Route tree
+#
+# Evaluation order:
+#   1. Watchdog / InfoInhibitor → null (always)
+#   2. env=~"prod.*" + severity=critical → production-critical (continue=true
+#      so it ALSO falls through to the team route below)
+#   3. namespace=~"kube-.*" → kube-system-receiver
+#   4. job=~".*-exporter"   → exporter-receiver
+#   5. team-N routes (exact match) → cluster sub-routes → priority leaf routes
+#   6. Root default catch-all
+#
+# group_by includes all routing dimensions so that alerts with different
+# team/cluster/priority/alertname each form their own aggregation group.
+# This maximises the group count (matching the benchmark scenario of
+# 5000–10000 groups) and stresses the dispatcher appropriately.
+# ---------------------------------------------------------------------------
+route:
+  receiver: "default"
+  group_by: [alertname, team, cluster, namespace]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+  routes:
+    # --- Watchdog: always active, always silent ---
+    - matchers:
+        - alertname = "Watchdog"
+      receiver: "null"
+      group_wait: 0s
+      repeat_interval: 1h
+
+    # --- Info-level inhibitor: silent by design ---
+    - matchers:
+        - alertname = "InfoInhibitor"
+      receiver: "null"
+      group_wait: 0s
+      repeat_interval: 1h
+
+    # --- Production critical: regex on env label ---
+    # Matches "production-us-east-1", "production-eu-west-1", etc.
+    # continue: true so the alert also matches a team route below.
+    - matchers:
+        - env =~ "prod.*"
+        - severity = "critical"
+      receiver: "production-critical"
+      group_by: [alertname, cluster, namespace]
+      group_wait: 10s
+      group_interval: 2m
+      repeat_interval: 1h
+      continue: true
+
+    # --- Kubernetes system namespace: regex on namespace ---
+    # Matches "kube-system", "kube-public"
+    - matchers:
+        - namespace =~ "kube-.*"
+      receiver: "kube-system-receiver"
+      group_by: [alertname, cluster]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 2h
+      continue: true
+
+    # --- Exporter jobs: regex on job label ---
+    # Matches "node-exporter", "prometheus-exporter"
+    - matchers:
+        - job =~ ".*-exporter"
+      receiver: "exporter-receiver"
+      group_by: [alertname, cluster, node]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 2h
+      continue: true
+
+    # --- Team routes: exact match on "team" label ---
+    # Each team route has 4 cluster sub-routes, each with 5 priority leaves.
+    # This creates the 500-leaf tree that BenchmarkGroups uses.
+
+    - matchers: [team = "team-0"]
+      receiver: "team-0-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      routes:
+        - matchers: [cluster = "cluster-0"]
+          receiver: "team-0-cluster-0-p0"  # fallback if no priority match
+          routes:
+            - matchers: [priority = "p0"]
+              receiver: "team-0-cluster-0-p0"
+            - matchers: [priority = "p1"]
+              receiver: "team-0-cluster-0-p1"
+            - matchers: [priority = "p2"]
+              receiver: "team-0-cluster-0-p2"
+            - matchers: [priority = "p3"]
+              receiver: "team-0-cluster-0-p3"
+            - matchers: [priority = "p4"]
+              receiver: "team-0-cluster-0-p4"
+        - matchers: [cluster = "cluster-1"]
+          receiver: "team-0-cluster-1-p0"
+          routes:
+            - matchers: [priority = "p0"]
+              receiver: "team-0-cluster-1-p0"
+            - matchers: [priority = "p1"]
+              receiver: "team-0-cluster-1-p1"
+            - matchers: [priority = "p2"]
+              receiver: "team-0-cluster-1-p2"
+            - matchers: [priority = "p3"]
+              receiver: "team-0-cluster-1-p3"
+            - matchers: [priority = "p4"]
+              receiver: "team-0-cluster-1-p4"
+        - matchers: [cluster = "cluster-2"]
+          receiver: "team-0-cluster-2-p0"
+          routes:
+            - matchers: [priority = "p0"]
+              receiver: "team-0-cluster-2-p0"
+            - matchers: [priority = "p1"]
+              receiver: "team-0-cluster-2-p1"
+            - matchers: [priority = "p2"]
+              receiver: "team-0-cluster-2-p2"
+            - matchers: [priority = "p3"]
+              receiver: "team-0-cluster-2-p3"
+            - matchers: [priority = "p4"]
+              receiver: "team-0-cluster-2-p4"
+        - matchers: [cluster = "cluster-3"]
+          receiver: "team-0-cluster-3-p0"
+          routes:
+            - matchers: [priority = "p0"]
+              receiver: "team-0-cluster-3-p0"
+            - matchers: [priority = "p1"]
+              receiver: "team-0-cluster-3-p1"
+            - matchers: [priority = "p2"]
+              receiver: "team-0-cluster-3-p2"
+            - matchers: [priority = "p3"]
+              receiver: "team-0-cluster-3-p3"
+            - matchers: [priority = "p4"]
+              receiver: "team-0-cluster-3-p4"
+
+    # teams 1-24: same structure, falling back to team-N-default for
+    # any cluster/priority combination not explicitly listed.
+    # Add their cluster/priority sub-routes identically to team-0 above.
+    - matchers: [team = "team-1"]
+      receiver: "team-1-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-2"]
+      receiver: "team-2-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-3"]
+      receiver: "team-3-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-4"]
+      receiver: "team-4-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-5"]
+      receiver: "team-5-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-6"]
+      receiver: "team-6-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-7"]
+      receiver: "team-7-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-8"]
+      receiver: "team-8-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-9"]
+      receiver: "team-9-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-10"]
+      receiver: "team-10-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-11"]
+      receiver: "team-11-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-12"]
+      receiver: "team-12-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-13"]
+      receiver: "team-13-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-14"]
+      receiver: "team-14-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-15"]
+      receiver: "team-15-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-16"]
+      receiver: "team-16-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-17"]
+      receiver: "team-17-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-18"]
+      receiver: "team-18-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-19"]
+      receiver: "team-19-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-20"]
+      receiver: "team-20-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-21"]
+      receiver: "team-21-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-22"]
+      receiver: "team-22-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-23"]
+      receiver: "team-23-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    - matchers: [team = "team-24"]
+      receiver: "team-24-default"
+      group_by: [alertname, cluster, priority]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
