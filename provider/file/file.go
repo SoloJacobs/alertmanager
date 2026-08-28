@@ -16,11 +16,14 @@ package file
 
 import (
 	"bufio"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -88,6 +91,12 @@ func (r *Recording) NewAlerts() (*Alerts, error) {
 		return nil, err
 	}
 
+	d, err := decompress(r.path, f)
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+
 	m, err := mem.NewAlerts(
 		context.Background(),
 		alertGCInterval,
@@ -108,9 +117,18 @@ func (r *Recording) NewAlerts() (*Alerts, error) {
 	return &Alerts{
 		Alerts: m,
 		file:   f,
-		reader: &fileReader{path: r.path, scanner: bufio.NewScanner(f)},
+		reader: &fileReader{path: r.path, scanner: bufio.NewScanner(d)},
 		quit:   make(chan struct{}),
 	}, nil
+}
+
+// decompress wraps r when path names a gzipped recording. A recording of any
+// size is mostly repeated label sets, so it is usually kept compressed.
+func decompress(path string, r io.Reader) (io.Reader, error) {
+	if !strings.HasSuffix(path, ".gz") {
+		return r, nil
+	}
+	return gzip.NewReader(r)
 }
 
 // firstReception returns when the first alert of the recording in path was
@@ -123,7 +141,12 @@ func firstReception(path string) (time.Time, error) {
 	}
 	defer f.Close()
 
-	r := &fileReader{path: path, scanner: bufio.NewScanner(f)}
+	d, err := decompress(path, f)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	r := &fileReader{path: path, scanner: bufio.NewScanner(d)}
 	if _, receptionTime, ok := r.next(); ok {
 		return receptionTime, nil
 	}

@@ -16,6 +16,7 @@ package inhibit_test
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -146,11 +148,19 @@ func newFlushLog(path string, out io.Writer, muter notify.Muter) (*flushLog, err
 	if err != nil {
 		return nil, err
 	}
+	r := io.Reader(f)
+	if strings.HasSuffix(path, ".gz") {
+		if r, err = gzip.NewReader(f); err != nil {
+			f.Close()
+			return nil, err
+		}
+	}
+
 	w := bufio.NewWriter(out)
 	return &flushLog{
 		path:   path,
 		file:   f,
-		reader: bufio.NewReader(f),
+		reader: bufio.NewReader(r),
 		out:    w,
 		enc:    json.NewEncoder(w),
 		muter:  muter,
