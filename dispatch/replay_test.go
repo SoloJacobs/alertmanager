@@ -15,12 +15,14 @@ package dispatch_test
 
 import (
 	"bufio"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"flag"
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -72,6 +74,12 @@ func TestReplay(t *testing.T) {
 		}
 		defer f.Close()
 		out = f
+
+		if strings.HasSuffix(*outputFile, ".gz") {
+			gz := gzip.NewWriter(f)
+			defer gz.Close()
+			out = gz
+		}
 	}
 
 	w := bufio.NewWriter(out)
