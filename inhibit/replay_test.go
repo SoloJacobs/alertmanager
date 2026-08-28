@@ -14,33 +14,49 @@
 package inhibit_test
 
 import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
 	"flag"
+	"fmt"
+	"io"
+	"os"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/prometheus/common/model"
 	"github.com/prometheus/common/promslog"
 
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/eventrecorder"
 	"github.com/prometheus/alertmanager/inhibit"
+	"github.com/prometheus/alertmanager/notify"
 	"github.com/prometheus/alertmanager/provider/file"
 )
 
 var (
 	configFile    = flag.String("config.file", "", "Alertmanager configuration to inhibit with.")
 	recordingFile = flag.String("recording.file", "", "JSONL alert recording to replay.")
+	flushFile     = flag.String("flush.file", "", "Flush log from the dispatcher replay, replayed alongside the alerts.")
 )
 
-// TestReplay feeds a recorded alert stream to the inhibitor.
+// TestReplay feeds a recorded alert stream to the inhibitor, and alongside it
+// replays the flush log a dispatcher produced from the same recording.
 //
-// Only the provider is wired up, so nothing ever asks the inhibitor whether a
-// label set is muted: in production that comes from the notification pipeline
-// and the API. What runs here is the ingestion half, the loop that keeps the
-// inhibition state up to date as alerts arrive.
+// The two share nothing but the clock. Alerts go to the inhibitor through the
+// provider, flushes go to stdout, and each is due at the instant its own record
+// carries, so they interleave the way they did when the flush log was written.
+//
+// Nothing asks the inhibitor whether a label set is muted: in production that
+// comes from the notification pipeline and the API. What runs here is the
+// ingestion half, the loop that keeps the inhibition state up to date.
 func TestReplay(t *testing.T) {
-	if *configFile == "" || *recordingFile == "" {
-		t.Skip("-config.file and -recording.file are required")
+	if *configFile == "" || *recordingFile == "" || *flushFile == "" {
+		t.Skip("-config.file, -recording.file and -flush.file are required")
 	}
 
 	conf, err := config.LoadFile(*configFile)
@@ -72,10 +88,18 @@ func TestReplay(t *testing.T) {
 			eventrecorder.NopRecorder(),
 		)
 
+		flushes, err := newFlushLog(*flushFile, os.Stdout, inhibitor)
+		if err != nil {
+			t.Fatal(err)
+		}
+
 		go inhibitor.Run()
 		inhibitor.WaitForLoading()
 
-		alerts.Run()
+		var replays sync.WaitGroup
+		replays.Go(alerts.Run)
+		replays.Go(flushes.Run)
+		replays.Wait()
 
 		// The last alerts put are still on their way to the inhibitor, which
 		// has no timer to wait on: it is done once it blocks on the
@@ -83,6 +107,9 @@ func TestReplay(t *testing.T) {
 		synctest.Wait()
 
 		inhibitor.Stop()
+		if err := flushes.Close(); err != nil {
+			t.Error(err)
+		}
 		if err := alerts.Close(); err != nil {
 			t.Error(err)
 		}
@@ -90,4 +117,83 @@ func TestReplay(t *testing.T) {
 		// Stop returns before the goroutines it cancelled do.
 		synctest.Wait()
 	})
+}
+
+// flushLog replays the flush log a dispatcher replay wrote. A record carries the
+// instant of its flush, so it is logged at that instant, the way the provider
+// puts an alert at its receptionTime.
+type flushLog struct {
+	path   string
+	file   *os.File
+	reader *bufio.Reader
+	line   int
+	out    io.Writer
+	muter  notify.Muter
+}
+
+func newFlushLog(path string, out io.Writer, muter notify.Muter) (*flushLog, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	return &flushLog{
+		path:   path,
+		file:   f,
+		reader: bufio.NewReader(f),
+		out:    out,
+		muter:  muter,
+	}, nil
+}
+
+// Run logs each record of the flush log at the instant of its flush. Records
+// must be ordered by ascending time; one that is already due is logged at once.
+//
+// A record holds every alert of its flush, so lines run long and are read
+// without a size limit rather than against a cap that a large group would trip.
+func (l *flushLog) Run() {
+	for {
+		line, err := l.reader.ReadBytes('\n')
+		if len(line) > 0 {
+			l.line++
+			l.replay(bytes.TrimRight(line, "\n"))
+		}
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				panic(fmt.Sprintf("%s: %s", l.path, err))
+			}
+			return
+		}
+	}
+}
+
+func (l *flushLog) replay(line []byte) {
+	if len(line) == 0 {
+		return
+	}
+
+	var rec struct {
+		Time   time.Time `json:"time"`
+		Alerts []struct {
+			Labels model.LabelSet `json:"labels"`
+		} `json:"alerts"`
+	}
+	if err := json.Unmarshal(line, &rec); err != nil {
+		panic(fmt.Sprintf("%s:%d: %s", l.path, l.line, err))
+	}
+
+	if wait := time.Until(rec.Time); wait > 0 {
+		time.Sleep(wait)
+	}
+
+	// The record is passed through as it was written.
+	fmt.Fprintf(l.out, "%s\n", line)
+
+	// The pipeline asks about every alert of the flush, one at a time.
+	for _, a := range rec.Alerts {
+		l.muter.Mutes(context.Background(), a.Labels)
+	}
+}
+
+func (l *flushLog) Close() error {
+	return l.file.Close()
 }
