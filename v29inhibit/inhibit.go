@@ -22,11 +22,11 @@ import (
 	"github.com/oklog/run"
 	"github.com/prometheus/common/model"
 
-	"github.com/prometheus/alertmanager/config"
+	amcommoncfg "github.com/prometheus/alertmanager/config/common"
+	"github.com/prometheus/alertmanager/marker"
 	"github.com/prometheus/alertmanager/pkg/labels"
 	"github.com/prometheus/alertmanager/provider"
 	"github.com/prometheus/alertmanager/store"
-	"github.com/prometheus/alertmanager/types"
 )
 
 // An Inhibitor determines whether a given label set is muted based on the
@@ -35,7 +35,7 @@ import (
 type Inhibitor struct {
 	alerts provider.Alerts
 	rules  []*InhibitRule
-	marker types.AlertMarker
+	marker marker.AlertMarker
 	logger *slog.Logger
 
 	mtx    sync.RWMutex
@@ -43,7 +43,7 @@ type Inhibitor struct {
 }
 
 // NewInhibitor returns a new Inhibitor.
-func NewInhibitor(ap provider.Alerts, rs []config.InhibitRule, mk types.AlertMarker, logger *slog.Logger) *Inhibitor {
+func NewInhibitor(ap provider.Alerts, rs []amcommoncfg.InhibitRule, mk marker.AlertMarker, logger *slog.Logger) *Inhibitor {
 	ih := &Inhibitor{
 		alerts: ap,
 		marker: mk,
@@ -57,7 +57,7 @@ func NewInhibitor(ap provider.Alerts, rs []config.InhibitRule, mk types.AlertMar
 }
 
 func (ih *Inhibitor) run(ctx context.Context) {
-	it := ih.alerts.Subscribe()
+	it := ih.alerts.Subscribe("inhibitor")
 	defer it.Close()
 
 	for {
@@ -71,8 +71,8 @@ func (ih *Inhibitor) run(ctx context.Context) {
 			}
 			// Update the inhibition rules' cache.
 			for _, r := range ih.rules {
-				if r.SourceMatchers.Matches(a.Labels) {
-					if err := r.scache.Set(a); err != nil {
+				if r.SourceMatchers.Matches(a.Data.Labels) {
+					if err := r.scache.Set(a.Data); err != nil {
 						ih.logger.Error("error on set alert", "err", err)
 					}
 				}
@@ -135,11 +135,11 @@ func (ih *Inhibitor) Mutes(lset model.LabelSet) bool {
 		// If we are here, the target side matches. If the source side matches, too, we
 		// need to exclude inhibiting alerts for which the same is true.
 		if inhibitedByFP, eq := r.hasEqual(lset, r.SourceMatchers.Matches(lset)); eq {
-			ih.marker.SetInhibited(fp, inhibitedByFP.String())
+			ih.marker.SetInhibited(fp, []string{inhibitedByFP.String()})
 			return true
 		}
 	}
-	ih.marker.SetInhibited(fp)
+	ih.marker.SetInhibited(fp, nil)
 
 	return false
 }
@@ -165,7 +165,7 @@ type InhibitRule struct {
 }
 
 // NewInhibitRule returns a new InhibitRule based on a configuration definition.
-func NewInhibitRule(cr config.InhibitRule) *InhibitRule {
+func NewInhibitRule(cr amcommoncfg.InhibitRule) *InhibitRule {
 	var (
 		sourcem labels.Matchers
 		targetm labels.Matchers
