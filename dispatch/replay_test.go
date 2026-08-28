@@ -26,6 +26,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/prometheus/common/model"
 	"github.com/prometheus/common/promslog"
 
 	"github.com/prometheus/alertmanager/alert"
@@ -157,6 +158,7 @@ type flushLog struct {
 }
 
 type flushRecord struct {
+	Time     time.Time     `json:"time"`
 	GroupKey string        `json:"groupKey"`
 	Receiver string        `json:"receiver"`
 	RouteID  string        `json:"routeId"`
@@ -165,18 +167,26 @@ type flushRecord struct {
 }
 
 type alertRecord struct {
-	Labels string `json:"labels"`
-	Status string `json:"status"`
+	Labels model.LabelSet `json:"labels"`
+	Status string         `json:"status"`
 }
 
 // Exec implements notify.Stage.
 func (f *flushLog) Exec(ctx context.Context, l *slog.Logger, alerts ...*alert.Alert) (context.Context, []*alert.Alert, error) {
+	// The flush ticker's time is the pipeline's reference for the present, so
+	// the record is timed by it rather than by when this stage happens to run.
+	now, ok := notify.Now(ctx)
+	if !ok {
+		now = time.Now()
+	}
+
 	groupKey, _ := notify.GroupKey(ctx)
 	receiver, _ := notify.ReceiverName(ctx)
 	routeID, _ := notify.RouteID(ctx)
 	flushID, _ := notify.FlushID(ctx)
 
 	record := flushRecord{
+		Time:     now,
 		GroupKey: groupKey,
 		Receiver: receiver,
 		RouteID:  routeID,
@@ -185,7 +195,7 @@ func (f *flushLog) Exec(ctx context.Context, l *slog.Logger, alerts ...*alert.Al
 	}
 	for i, a := range alerts {
 		record.Alerts[i] = alertRecord{
-			Labels: a.Labels.String(),
+			Labels: a.Labels,
 			Status: string(a.Status()),
 		}
 	}
