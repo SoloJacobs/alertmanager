@@ -32,10 +32,10 @@ import (
 	"github.com/prometheus/common/promslog"
 
 	"github.com/prometheus/alertmanager/config"
-	"github.com/prometheus/alertmanager/eventrecorder"
-	"github.com/prometheus/alertmanager/inhibit"
+	"github.com/prometheus/alertmanager/marker"
 	"github.com/prometheus/alertmanager/notify"
 	"github.com/prometheus/alertmanager/provider/file"
+	v29 "github.com/prometheus/alertmanager/v29inhibit"
 )
 
 var (
@@ -44,7 +44,8 @@ var (
 	flushFile     = flag.String("flush.file", "", "Flush log from the dispatcher replay, replayed alongside the alerts.")
 )
 
-// TestReplay feeds a recorded alert stream to the inhibitor, and alongside it
+// TestReplay feeds a recorded alert stream to the v0.29 inhibitor, and
+// alongside it
 // replays the flush log a dispatcher produced from the same recording.
 //
 // The two share nothing but the clock. Alerts go to the inhibitor through the
@@ -81,20 +82,29 @@ func TestReplay(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		inhibitor := inhibit.NewInhibitor(
+		inhibitor := v29.NewInhibitor(
 			alerts,
 			conf.InhibitRules,
+			marker.NewAlertMarker(),
 			promslog.NewNopLogger(),
-			eventrecorder.NopRecorder(),
 		)
 
-		flushes, err := newFlushLog(*flushFile, os.Stdout, inhibitor)
+		// This inhibitor's Mutes predates the context argument.
+		muter := notify.MuteFunc(func(_ context.Context, lset model.LabelSet) bool {
+			return inhibitor.Mutes(lset)
+		})
+
+		flushes, err := newFlushLog(*flushFile, os.Stdout, muter)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		go inhibitor.Run()
-		inhibitor.WaitForLoading()
+
+		// This inhibitor subscribes inside Run and has no initial slurp to wait
+		// on, so the replay may not start until it is blocked on the
+		// subscription.
+		synctest.Wait()
 
 		var replays sync.WaitGroup
 		replays.Go(alerts.Run)
