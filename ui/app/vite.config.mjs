@@ -4,6 +4,10 @@ import { compression, defineAlgorithm } from "vite-plugin-compression2";
 
 export default defineConfig({
   base: "./",  // ensure that `--web.route.prefix` works correctly.
+  build: {
+    // Served by the Go binary from its embedded FS, next to the Mantine build.
+    outDir: "dist/elm",
+  },
   plugins: [
     elm(),
     compression({

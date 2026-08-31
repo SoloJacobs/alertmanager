@@ -31,17 +31,47 @@ import (
 //go:embed app/dist
 var asset embed.FS
 
+// Roots of the two UI builds inside the embedded FS. Asset paths in index.html
+// are relative to the root, so each UI's `assets/` stays in its own namespace.
+const (
+	elmRoot     = "app/dist/elm"
+	mantineRoot = "app/dist/mantine"
+)
+
+var (
+	elmFS     = mustSub(elmRoot)
+	mantineFS = mustSub(mantineRoot)
+)
+
+func mustSub(root string) fs.FS {
+	sub, err := fs.Sub(asset, root)
+	if err != nil {
+		panic(err) // During build step, we did not embed a directory named root.
+	}
+	return sub
+}
+
 var fileTypes = map[string]struct {
 	contentType  string // https://www.iana.org/assignments/media-types/
 	varyEncoding bool   // Must match build configuration in vite.config.mjs.
 }{
+	".avif":  {"image/avif", true},
 	".css":   {"text/css; charset=utf-8", true},
 	".eot":   {"application/vnd.ms-fontobject", true},
+	".gif":   {"image/gif", true},
 	".html":  {"text/html; charset=utf-8", true},
 	".ico":   {"image/vnd.microsoft.icon", true},
+	".jpeg":  {"image/jpeg", true},
+	".jpg":   {"image/jpeg", true},
 	".js":    {"text/javascript; charset=utf-8", true},
+	".json":  {"application/json", true},
+	".mjs":   {"text/javascript; charset=utf-8", true},
+	".otf":   {"font/otf", true},
+	".png":   {"image/png", true},
 	".svg":   {"image/svg+xml", true},
 	".ttf":   {"font/ttf", true},
+	".txt":   {"text/plain; charset=utf-8", true},
+	".webp":  {"image/webp", true},
 	".woff":  {"font/woff", false},
 	".woff2": {"font/woff2", false},
 }
@@ -116,11 +146,7 @@ func decompressToReader(f fs.File) (*bytes.Reader, error) {
 
 // Register registers handlers to serve files for the web interface.
 func Register(r *route.Router) {
-	appFS, err := fs.Sub(asset, "app/dist")
-	if err != nil {
-		panic(err) // During build step, we did not embed a directory named `app/dist`.
-	}
-	serve := func(w http.ResponseWriter, req *http.Request, filePath string, immutable bool) {
+	serve := func(w http.ResponseWriter, req *http.Request, appFS fs.FS, filePath string, immutable bool) {
 		ext := strings.ToLower(path.Ext(filePath))
 		fileType, ok := fileTypes[ext]
 		if !ok {
@@ -178,15 +204,29 @@ func Register(r *route.Router) {
 	}
 
 	r.Get("/", func(w http.ResponseWriter, req *http.Request) {
-		serve(w, req, "index.html", false)
+		serve(w, req, elmFS, "index.html", false)
 	})
 
 	r.Get("/favicon.ico", func(w http.ResponseWriter, req *http.Request) {
-		serve(w, req, "favicon.ico", false)
+		serve(w, req, elmFS, "favicon.ico", false)
 	})
 
 	r.Get("/assets/*path", func(w http.ResponseWriter, req *http.Request) {
-		serve(w, req, path.Join("assets", route.Param(req.Context(), "path")), true)
+		serve(w, req, elmFS, path.Join("assets", route.Param(req.Context(), "path")), true)
+	})
+
+	r.Get("/ui", func(w http.ResponseWriter, req *http.Request) {
+		// Relative asset paths in index.html resolve against the parent
+		// directory, so `/ui` alone would look for `/assets/*`.
+		http.Redirect(w, req, req.URL.Path+"/", http.StatusFound)
+	})
+
+	r.Get("/ui/", func(w http.ResponseWriter, req *http.Request) {
+		serve(w, req, mantineFS, "index.html", false)
+	})
+
+	r.Get("/ui/assets/*path", func(w http.ResponseWriter, req *http.Request) {
+		serve(w, req, mantineFS, path.Join("assets", route.Param(req.Context(), "path")), true)
 	})
 }
 

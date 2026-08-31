@@ -7,7 +7,7 @@ import { CodeHighlightAdapterProvider, createHighlightJsAdapter } from '@mantine
 import { AppShell, Box, MantineProvider, Skeleton } from '@mantine/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import hljs from 'highlight.js/lib/core';
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 
 import ErrorBoundary from './components/ErrorBoundary';
 import { Header } from './components/Header';
@@ -26,9 +26,12 @@ const highlightJsAdapter = createHighlightJsAdapter(hljs);
 
 const queryClient = new QueryClient();
 
+// Hash routing keeps the mount point (`/ui/`, plus any `--web.route-prefix`)
+// out of the client's business, and matches the scheme the Elm UI has always
+// used.
 export default function App() {
   return (
-    <BrowserRouter>
+    <HashRouter>
       <MantineProvider theme={theme}>
         <CodeHighlightAdapterProvider adapter={highlightJsAdapter}>
           <QueryClientProvider client={queryClient}>
@@ -62,6 +65,6 @@ export default function App() {
           </QueryClientProvider>
         </CodeHighlightAdapterProvider>
       </MantineProvider>
-    </BrowserRouter>
+    </HashRouter>
   );
 }

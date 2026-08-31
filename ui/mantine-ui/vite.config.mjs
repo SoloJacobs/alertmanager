@@ -13,6 +13,11 @@ const licenseFile = path.resolve(
 
 export default defineConfig({
   base: './',
+  build: {
+    // Served by the Go binary from its embedded FS, next to the Elm build.
+    outDir: '../app/dist/mantine',
+    emptyOutDir: true, // Required, since outDir is outside the project root.
+  },
   plugins: [
     react(),
     tsconfigPaths(),
@@ -26,7 +31,8 @@ export default defineConfig({
     }),
     compression({
       include: [
-        /(^|\/)assets\/.*\.(avif|css|eot|gif|ico|jpe?g|js|json|mjs|otf|png|svg|ttf|txt|webp|woff2?)$/,
+        /(^|\/)assets\/.*\.(avif|css|eot|gif|ico|jpe?g|js|json|mjs|otf|png|svg|ttf|txt|webp)$/,
+        /\.html$/,
       ],
       artifacts: () => [
         {
