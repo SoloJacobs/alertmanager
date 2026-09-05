@@ -20,3 +20,7 @@ grep -E 'flushes:|Mutes calls|alerts muted|fully muted|FAIL|^--- (PASS|FAIL)|^ok
 go test -v -count=1 ./5449updatedinhibit -run TestReplay -config.file=$CONFIG -recording.file=$RECORDING -flush.file=$FLUSHES > /tmp/5449updatedinhibit.log 2>&1
 echo "=== 5449updatedinhibit"
 grep -E 'flushes:|Mutes calls|alerts muted|fully muted|FAIL|^--- (PASS|FAIL)|^ok ' /tmp/5449updatedinhibit.log | sed 's/.*replay_test.go:[0-9]*: //'
+
+go test -v -count=1 ./5542updatedinhibit -run TestReplay -config.file=$CONFIG -recording.file=$RECORDING -flush.file=$FLUSHES > /tmp/5542updatedinhibit.log 2>&1
+echo "=== 5542updatedinhibit"
+grep -E 'flushes:|Mutes calls|alerts muted|fully muted|FAIL|^--- (PASS|FAIL)|^ok ' /tmp/5542updatedinhibit.log | sed 's/.*replay_test.go:[0-9]*: //'
