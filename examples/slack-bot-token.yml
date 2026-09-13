@@ -1,0 +1,30 @@
+global:
+  # Bot token of a Slack app with the chat:write scope. The receiver sends it as
+  # "Authorization: Bearer <token>" to https://slack.com/api/chat.postMessage.
+  # Use slack_app_token_file instead to read it from disk.
+  slack_app_token: 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+
+route:
+  receiver: 'slack-notifications'
+  group_by: [alertname, cluster]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: 'slack-notifications'
+    slack_configs:
+      # Channel name or channel ID. The bot must be a member of it.
+      - channel: '#alerts'
+        send_resolved: true
+        title: '{{ template "slack.default.title" . }}'
+        text: '{{ template "slack.default.text" . }}'
+        # Edits the previously sent message for this alert group instead of
+        # posting a new one. Only possible with a bot token.
+        update_message: true
+
+      # Per-receiver token, overriding the global one.
+      - channel: 'C0123456789'
+        app_token: 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+        send_resolved: true
+        update_message: true
