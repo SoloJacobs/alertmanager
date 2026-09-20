@@ -113,11 +113,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) notify.Notify
 	if err != nil {
 		reason := notify.GetFailureReasonFromStatusCode(resp.StatusCode)
 		if shouldRetry {
-			retryAfter := notify.ParseRetryAfter(resp.Header, received)
-			if retryAfter > 0 {
-				logger.Warn("Rate limited by Webex, delaying retry", "retry_after_secs", retryAfter.Seconds())
-			}
-			return notify.Retry(retryAfter, err, reason)
+			return notify.Retry(notify.ParseRetryAfter(resp.Header, received), err, reason)
 		}
 		return notify.Unrecoverable(err, reason)
 	}

@@ -155,7 +155,8 @@ func (r RetryStage) exec(ctx context.Context, l *slog.Logger, alerts ...*alert.A
 			dur := time.Since(now)
 			// Back off from the end of the attempt, not from its start, so a
 			// slow failure doesn't eat into the wait.
-			tick.Reset(max(b.NextBackOff(), verdict.Delay()))
+			wait := max(b.NextBackOff(), verdict.Delay())
+			tick.Reset(wait)
 			r.metrics.notificationLatencySeconds.WithLabelValues(r.labelValues...).Observe(dur.Seconds())
 			r.metrics.numNotificationRequestsTotal.WithLabelValues(r.labelValues...).Inc()
 			if err := verdict.Err(); err != nil {
@@ -166,7 +167,7 @@ func (r RetryStage) exec(ctx context.Context, l *slog.Logger, alerts ...*alert.A
 				if ctx.Err() == nil {
 					if lastErr == nil || err.Error() != lastErr.Error() {
 						// Log the error if the context isn't done and the error isn't the same as before.
-						l.Warn("Notify attempt failed, will retry later", "attempts", attempts, "err", err)
+						l.Warn("Notify attempt failed, will retry later", "attempts", attempts, "wait", wait, "err", err)
 					}
 					// Save this error to be able to return the last seen error by an
 					// integration upon context timeout.

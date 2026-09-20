@@ -213,11 +213,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) notify.Notify
 		err = fmt.Errorf("channel %q: %w", req.Channel, err)
 		reason := notify.GetFailureReasonFromStatusCode(resp.StatusCode)
 		if retry {
-			retryAfter := notify.ParseRetryAfter(resp.Header, received)
-			if retryAfter > 0 {
-				n.logger.Warn("Rate limited by Slack, delaying retry", "retry_after_secs", retryAfter.Seconds())
-			}
-			return notify.Retry(retryAfter, err, reason)
+			return notify.Retry(notify.ParseRetryAfter(resp.Header, received), err, reason)
 		}
 		return notify.Unrecoverable(err, reason)
 	}
