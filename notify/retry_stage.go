@@ -143,10 +143,7 @@ func (r RetryStage) exec(ctx context.Context, l *slog.Logger, alerts ...*alert.A
 				}
 			}
 
-			if iErr != nil {
-				return ctx, nil, iReason, fmt.Errorf("%s/%s: notify retry canceled after %d attempts: %w", r.groupName, r.integration.String(), i, iErr)
-			}
-			return ctx, nil, DefaultReason, nil
+			return ctx, nil, iReason, fmt.Errorf("%s/%s: notify retry canceled after %d attempts: %w", r.groupName, r.integration.String(), i, iErr)
 		default:
 		}
 
