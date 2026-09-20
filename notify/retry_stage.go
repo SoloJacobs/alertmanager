@@ -119,9 +119,9 @@ func (r RetryStage) exec(ctx context.Context, l *slog.Logger, alerts ...*alert.A
 	defer tick.Stop()
 
 	var (
-		i       = 0
-		iErr    error
-		iReason Reason
+		attempts   = 0
+		lastErr    error
+		lastReason Reason
 	)
 
 	l = l.With("receiver", r.groupName, "integration", r.integration.String())
@@ -134,16 +134,16 @@ func (r RetryStage) exec(ctx context.Context, l *slog.Logger, alerts ...*alert.A
 		// Always check the context first to not notify again.
 		select {
 		case <-ctx.Done():
-			if iErr == nil {
-				iErr = ctx.Err()
-				if errors.Is(iErr, context.Canceled) {
-					iReason = ContextCanceledReason
-				} else if errors.Is(iErr, context.DeadlineExceeded) {
-					iReason = ContextDeadlineExceededReason
+			if lastErr == nil {
+				lastErr = ctx.Err()
+				if errors.Is(lastErr, context.Canceled) {
+					lastReason = ContextCanceledReason
+				} else if errors.Is(lastErr, context.DeadlineExceeded) {
+					lastReason = ContextDeadlineExceededReason
 				}
 			}
 
-			return ctx, nil, iReason, fmt.Errorf("%s/%s: notify retry canceled after %d attempts: %w", r.groupName, r.integration.String(), i, iErr)
+			return ctx, nil, lastReason, fmt.Errorf("%s/%s: notify retry canceled after %d attempts: %w", r.groupName, r.integration.String(), attempts, lastErr)
 		default:
 		}
 
@@ -151,7 +151,7 @@ func (r RetryStage) exec(ctx context.Context, l *slog.Logger, alerts ...*alert.A
 		case <-tick.C:
 			now := time.Now()
 			verdict := r.integration.Notify(ctx, sent...)
-			i++
+			attempts++
 			dur := time.Since(now)
 			// Back off from the end of the attempt, not from its start, so a
 			// slow failure doesn't eat into the wait.
@@ -161,24 +161,24 @@ func (r RetryStage) exec(ctx context.Context, l *slog.Logger, alerts ...*alert.A
 			if err := verdict.Err(); err != nil {
 				r.metrics.numNotificationRequestsFailedTotal.WithLabelValues(r.labelValues...).Inc()
 				if !verdict.ShouldRetry() {
-					return ctx, alerts, verdict.Reason(), fmt.Errorf("%s/%s: notify retry canceled due to unrecoverable error after %d attempts: %w", r.groupName, r.integration.String(), i, err)
+					return ctx, alerts, verdict.Reason(), fmt.Errorf("%s/%s: notify retry canceled due to unrecoverable error after %d attempts: %w", r.groupName, r.integration.String(), attempts, err)
 				}
 				if ctx.Err() == nil {
-					if iErr == nil || err.Error() != iErr.Error() {
+					if lastErr == nil || err.Error() != lastErr.Error() {
 						// Log the error if the context isn't done and the error isn't the same as before.
-						l.Warn("Notify attempt failed, will retry later", "attempts", i, "err", err)
+						l.Warn("Notify attempt failed, will retry later", "attempts", attempts, "err", err)
 					}
 					// Save this error to be able to return the last seen error by an
 					// integration upon context timeout.
-					iErr, iReason = err, verdict.Reason()
+					lastErr, lastReason = err, verdict.Reason()
 				}
 			} else {
 				l := l.With(
-					"attempts", i,
+					"attempts", attempts,
 					"duration", dur,
 					"numAlerts", len(sent),
 				)
-				if i <= 1 {
+				if attempts <= 1 {
 					l.Debug("Notify success", "alerts", sent)
 				} else {
 					l.Info("Notify success")
